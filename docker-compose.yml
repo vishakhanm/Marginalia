@@ -1,0 +1,76 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.11.3
+    container_name: llm-playground-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./qdrant_data:/qdrant/storage
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongo:
+    image: mongo:7.0
+    container_name: llm-playground-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./mongo_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: llm_playground
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+    container_name: llm-playground-backend
+    ports:
+      - "8000:8000"
+    environment:
+      # Ollama stays on the host — reached via the special Docker DNS name
+      OLLAMA_HOST: http://host.docker.internal:11434
+      # Qdrant/Mongo are reached by their service names on the Docker network,
+      # not "localhost" (that would mean "inside the backend container")
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB_NAME: llm_playground
+    extra_hosts:
+      # Required on Linux for host.docker.internal to resolve;
+      # Docker Desktop (Mac/Windows) provides this automatically but the
+      # entry is harmless there too.
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Baked into the built JS bundle — the browser on the host machine
+        # calls this URL directly, so it points at the published host port.
+        VITE_API_BASE_URL: http://localhost:8000
+    container_name: llm-playground-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+networks:
+  default:
+    name: llm-playground-network
